@@ -22,6 +22,10 @@ const statusOptions = ["Offen", "Angelegt", "E-Mail raus", "Warten auf Upload", 
 const jaOptions = ["Ja", "Nein"];
 const typOptions = ["Online", "Lokal"];
 
+const defaultColWidths = [
+  36, 50, 120, 150, 100, 120, 90, 100, 110, 120, 110, 120, 140, 120, 120, 100, 130, 150
+];
+
 const statusColors = {
   "Offen": "bg-gray-50",
   "Angelegt": "bg-blue-50",
@@ -112,6 +116,42 @@ export default function Tracker() {
   const [filterMonat, setFilterMonat] = useState("");
   const [filterStatus, setFilterStatus] = useState("");
   const debounceRef = useRef(null);
+  const [colWidths, setColWidths] = useState(() => [...defaultColWidths]);
+  const resizeRef = useRef(null);
+  const tableRef = useRef(null);
+
+  // Column resize handlers
+  const onResizeStart = useCallback((colIndex, e) => {
+    e.preventDefault();
+    resizeRef.current = { colIndex, startX: e.clientX, startWidth: colWidths[colIndex] };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }, [colWidths]);
+
+  useEffect(() => {
+    function onMouseMove(e) {
+      if (!resizeRef.current) return;
+      const { colIndex, startX, startWidth } = resizeRef.current;
+      const newWidth = Math.max(30, startWidth + (e.clientX - startX));
+      setColWidths(prev => {
+        const next = [...prev];
+        next[colIndex] = newWidth;
+        return next;
+      });
+    }
+    function onMouseUp() {
+      if (!resizeRef.current) return;
+      resizeRef.current = null;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    }
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+    return () => {
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    };
+  }, []);
 
   // Load data on mount
   useEffect(() => {
@@ -353,11 +393,22 @@ export default function Tracker() {
 
       {/* Table */}
       <div className="overflow-x-auto bg-white rounded shadow relative" style={{ maxHeight: "70vh" }}>
-        <table className="text-sm w-full border-collapse">
+        <table ref={tableRef} className="text-sm border-collapse" style={{ tableLayout: "fixed", width: colWidths.reduce((a, b) => a + b, 0) }}>
+          <colgroup>
+            {colWidths.map((w, i) => (
+              <col key={i} style={{ width: w }} />
+            ))}
+          </colgroup>
           <thead className="sticky top-0 z-10">
             <tr className="bg-gray-800 text-white">
               {headers.map((h, i) => (
-                <th key={i} className="px-3 py-2.5 text-left font-medium whitespace-nowrap">{h}</th>
+                <th key={i} className="px-3 py-2.5 text-left font-medium whitespace-nowrap relative overflow-hidden" style={{ width: colWidths[i] }}>
+                  {h}
+                  <div
+                    onMouseDown={(e) => onResizeStart(i, e)}
+                    className="absolute top-0 right-0 w-1.5 h-full cursor-col-resize hover:bg-blue-400/50 active:bg-blue-400/70"
+                  />
+                </th>
               ))}
             </tr>
           </thead>
@@ -376,7 +427,7 @@ export default function Tracker() {
                   </td>
                   <td className="px-3 py-1.5 text-gray-400 font-mono">{displayIdx + 1}</td>
                   <td className="px-2 py-1.5"><input className={inp} value={r.az} onChange={e => update(realIdx, "az", e.target.value)} /></td>
-                  <td className="px-2 py-1.5"><input className={inp} value={r.name} onChange={e => update(realIdx, "name", e.target.value)} style={{ minWidth: "130px" }} /></td>
+                  <td className="px-2 py-1.5"><input className={inp} value={r.name} onChange={e => update(realIdx, "name", e.target.value)} /></td>
                   <td className="px-2 py-1.5"><select className={sel} value={r.typ} onChange={e => update(realIdx, "typ", e.target.value)}><option value="">-</option>{typOptions.map(o => <option key={o}>{o}</option>)}</select></td>
                   <td className="px-2 py-1.5"><select className={sel} value={r.batch} onChange={e => update(realIdx, "batch", e.target.value)}><option value="">-</option>{batchOptions.map(o => <option key={o}>{o}</option>)}</select></td>
                   <td className="px-2 py-1.5"><select className={sel} value={r.monat} onChange={e => update(realIdx, "monat", e.target.value)}><option value="">-</option>{monatOptions.map(o => <option key={o}>{o}</option>)}</select></td>
@@ -390,7 +441,7 @@ export default function Tracker() {
                   <td className="px-2 py-1.5"><input type="date" className={inp} value={r.datumReminder} onChange={e => update(realIdx, "datumReminder", e.target.value)} /></td>
                   <td className="px-2 py-1.5"><select className={sel} value={r.tel} onChange={e => update(realIdx, "tel", e.target.value)}><option value="">-</option>{jaOptions.map(o => <option key={o}>{o}</option>)}</select></td>
                   <td className="px-2 py-1.5"><select className={sel} value={r.status} onChange={e => update(realIdx, "status", e.target.value)}>{statusOptions.map(o => <option key={o}>{o}</option>)}</select></td>
-                  <td className="px-2 py-1.5"><input className={inp} value={r.bemerkung} onChange={e => update(realIdx, "bemerkung", e.target.value)} style={{ minWidth: "130px" }} /></td>
+                  <td className="px-2 py-1.5"><input className={inp} value={r.bemerkung} onChange={e => update(realIdx, "bemerkung", e.target.value)} /></td>
                 </tr>
               );
             })}
