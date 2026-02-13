@@ -1,4 +1,11 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
+import {
+  fetchRows,
+  upsertRows,
+  deleteRow as supaDeleteRow,
+  resetAll,
+  supabase,
+} from "./supabase";
 
 const STORAGE_KEY = "portal-tracker-data";
 
@@ -28,6 +35,7 @@ const statusColors = {
 
 function makeEmptyRow() {
   return {
+    id: crypto.randomUUID(),
     az: "", name: "", typ: "", batch: "", monat: "",
     rate: "", portal: "", datumPortal: "", email: "", datumEmail: "",
     docs: "", reminder: "", datumReminder: "", tel: "", status: "Offen", bemerkung: ""
@@ -55,6 +63,27 @@ function saveToStorage(rows) {
   } catch { /* ignore */ }
 }
 
+function ensureIds(rows) {
+  return rows.map(r => r.id ? r : { ...r, id: crypto.randomUUID() });
+}
+
+const syncStatusConfig = {
+  saved: { label: "Gespeichert", color: "text-green-600", bg: "bg-green-50" },
+  saving: { label: "Speichert...", color: "text-yellow-600", bg: "bg-yellow-50" },
+  offline: { label: "Offline", color: "text-gray-500", bg: "bg-gray-100" },
+  error: { label: "Sync-Fehler", color: "text-red-600", bg: "bg-red-50" },
+};
+
+function SyncIndicator({ status }) {
+  const cfg = syncStatusConfig[status] || syncStatusConfig.offline;
+  return (
+    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${cfg.bg} ${cfg.color}`}>
+      <span className={`w-2 h-2 rounded-full ${status === "saving" ? "animate-pulse" : ""} ${cfg.color.replace("text-", "bg-")}`} />
+      {cfg.label}
+    </span>
+  );
+}
+
 function StatCard({ label, count, total, color }) {
   const pct = total > 0 ? Math.round((count / total) * 100) : 0;
   return (
@@ -75,31 +104,111 @@ function StatCard({ label, count, total, color }) {
 }
 
 export default function Tracker() {
-  const [rows, setRows] = useState(() => loadFromStorage() || makeEmptyRows(20));
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [syncStatus, setSyncStatus] = useState(supabase ? "saving" : "offline");
   const [search, setSearch] = useState("");
   const [filterBatch, setFilterBatch] = useState("");
   const [filterMonat, setFilterMonat] = useState("");
   const [filterStatus, setFilterStatus] = useState("");
+  const debounceRef = useRef(null);
 
+  // Load data on mount
   useEffect(() => {
-    saveToStorage(rows);
+    let cancelled = false;
+    async function load() {
+      try {
+        const data = await fetchRows();
+        if (cancelled) return;
+        if (data && data.length > 0) {
+          setRows(data);
+          saveToStorage(data);
+          setSyncStatus("saved");
+        } else if (data) {
+          // Supabase connected but empty — migrate localStorage if present
+          const local = loadFromStorage();
+          if (local && local.length > 0) {
+            const withIds = ensureIds(local);
+            setRows(withIds);
+            await upsertRows(withIds);
+            setSyncStatus("saved");
+          } else {
+            const fresh = makeEmptyRows(20);
+            setRows(fresh);
+            await upsertRows(fresh);
+            setSyncStatus("saved");
+          }
+        } else {
+          // supabase is null (no env vars) — localStorage only
+          const local = loadFromStorage();
+          setRows(local ? ensureIds(local) : makeEmptyRows(20));
+          setSyncStatus("offline");
+        }
+      } catch (err) {
+        if (cancelled) return;
+        console.error("Supabase load failed, falling back to localStorage:", err);
+        setSyncStatus("offline");
+        const local = loadFromStorage();
+        setRows(local ? ensureIds(local) : makeEmptyRows(20));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Save to localStorage on every change (offline fallback)
+  useEffect(() => {
+    if (rows.length > 0) saveToStorage(rows);
   }, [rows]);
+
+  // Debounced Supabase sync
+  const syncToSupabase = useCallback((updatedRows) => {
+    if (!supabase) return;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    setSyncStatus("saving");
+    debounceRef.current = setTimeout(async () => {
+      try {
+        await upsertRows(updatedRows);
+        setSyncStatus("saved");
+      } catch (err) {
+        console.error("Supabase sync failed:", err);
+        setSyncStatus("error");
+      }
+    }, 500);
+  }, []);
 
   const update = (realIndex, field, val) => {
     const n = [...rows];
     n[realIndex] = { ...n[realIndex], [field]: val };
     setRows(n);
+    syncToSupabase(n);
   };
 
-  const deleteRow = (realIndex) => {
-    setRows(rows.filter((_, i) => i !== realIndex));
+  const handleDeleteRow = (realIndex) => {
+    const row = rows[realIndex];
+    const newRows = rows.filter((_, i) => i !== realIndex);
+    setRows(newRows);
+    if (supabase && row.id) {
+      setSyncStatus("saving");
+      supaDeleteRow(row.id)
+        .then(() => upsertRows(newRows))
+        .then(() => setSyncStatus("saved"))
+        .catch((err) => {
+          console.error("Supabase delete failed:", err);
+          setSyncStatus("error");
+        });
+    }
   };
 
   const addRows = () => {
-    setRows([...rows, ...makeEmptyRows(10)]);
+    const newRows = [...rows, ...makeEmptyRows(10)];
+    setRows(newRows);
+    syncToSupabase(newRows);
   };
 
-  const resetData = () => {
+  const resetData = async () => {
     if (window.confirm("Alle Daten wirklich zurücksetzen? Dies kann nicht rückgängig gemacht werden.")) {
       const fresh = makeEmptyRows(20);
       setRows(fresh);
@@ -107,6 +216,14 @@ export default function Tracker() {
       setFilterBatch("");
       setFilterMonat("");
       setFilterStatus("");
+      try {
+        await resetAll();
+        await upsertRows(fresh);
+        setSyncStatus("saved");
+      } catch (err) {
+        console.error("Supabase reset failed:", err);
+        setSyncStatus("error");
+      }
     }
   };
 
@@ -159,11 +276,25 @@ export default function Tracker() {
   const sel = "bg-white border border-gray-300 rounded px-2 py-1 text-sm w-full focus:outline-none focus:ring-1 focus:ring-blue-400";
   const inp = "border border-gray-300 rounded px-2 py-1 text-sm w-full focus:outline-none focus:ring-1 focus:ring-blue-400";
 
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gray-50">
+        <div className="text-center">
+          <div className="animate-spin h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full mx-auto mb-4" />
+          <p className="text-gray-500 text-sm">Daten werden geladen...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="p-4 bg-gray-50 min-h-screen">
       {/* Header */}
       <div className="flex flex-wrap justify-between items-center mb-4 gap-2">
-        <h1 className="text-xl font-bold text-gray-800">Portal-Migration Tracking</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-xl font-bold text-gray-800">Portal-Migration Tracking</h1>
+          <SyncIndicator status={syncStatus} />
+        </div>
         <div className="flex gap-2 flex-wrap">
           <button onClick={addRows} className="bg-gray-600 text-white px-3 py-1.5 rounded text-sm hover:bg-gray-700 transition-colors">+ 10 Zeilen</button>
           <button onClick={exportCSV} className="bg-blue-600 text-white px-3 py-1.5 rounded text-sm hover:bg-blue-700 transition-colors">CSV Export</button>
@@ -235,10 +366,10 @@ export default function Tracker() {
               const r = rows[realIdx];
               const rowColor = statusColors[r.status] || "bg-white";
               return (
-                <tr key={realIdx} className={`border-b ${rowColor} hover:brightness-95 transition-all`}>
+                <tr key={r.id || realIdx} className={`border-b ${rowColor} hover:brightness-95 transition-all`}>
                   <td className="px-2 py-1.5 text-center">
                     <button
-                      onClick={() => deleteRow(realIdx)}
+                      onClick={() => handleDeleteRow(realIdx)}
                       className="text-red-400 hover:text-red-600 font-bold text-xs leading-none transition-colors"
                       title="Zeile löschen"
                     >X</button>
