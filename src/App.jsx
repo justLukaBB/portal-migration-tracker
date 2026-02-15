@@ -243,13 +243,14 @@ export default function Tracker() {
       if (result.status === "not_found") {
         setRowWarnings(prev => ({
           ...prev,
-          [realIndex]: { type: "not_found", msg: `Kein Kontakt fuer "${az}" in Zendesk gefunden.` },
+          [realIndex]: { msg: `Kein Kontakt fuer "${az}" in Zendesk gefunden.` },
         }));
-      } else if (result.status === "phone_only") {
+      } else if (result.status === "incomplete") {
         update(realIndex, "name", result.name);
+        const felder = result.missing.join(", ");
         setRowWarnings(prev => ({
           ...prev,
-          [realIndex]: { type: "phone_only", msg: `Nur Telefon hinterlegt (${result.phone}) – keine E-Mail. Bitte manuell nachfassen.` },
+          [realIndex]: { msg: `Unvollstaendig – es fehlt: ${felder}. Kein Ticket erstellt.` },
         }));
       } else {
         update(realIndex, "name", result.name);
@@ -259,7 +260,7 @@ export default function Tracker() {
       console.error("Zendesk lookup failed:", err);
       setRowWarnings(prev => ({
         ...prev,
-        [realIndex]: { type: "error", msg: "Zendesk-Abfrage fehlgeschlagen." },
+        [realIndex]: { msg: "Zendesk-Abfrage fehlgeschlagen." },
       }));
     } finally {
       setLookingUp(prev => ({ ...prev, [realIndex]: false }));
@@ -476,11 +477,11 @@ export default function Tracker() {
                   <td className="px-2 py-1.5">
                     <input className={`${inp} ${warning ? "border-red-400" : ""}`} value={r.az} onChange={e => update(realIdx, "az", e.target.value)} onBlur={() => handleAzBlur(realIdx)} />
                     {warning && (
-                      <div className={`mt-1 text-xs rounded px-2 py-1 flex items-center gap-2 ${warning.type === "phone_only" ? "bg-yellow-100 text-yellow-800" : "bg-red-100 text-red-700"}`}>
+                      <div className="mt-1 text-xs rounded px-2 py-1 flex items-center gap-2 bg-red-100 text-red-700">
                         <span className="flex-1">{warning.msg}</span>
                         <button
                           onClick={() => handleAzBlur(realIdx)}
-                          className="shrink-0 bg-white border border-current rounded px-1.5 py-0.5 hover:opacity-80 font-medium"
+                          className="shrink-0 bg-white border border-red-400 text-red-700 rounded px-1.5 py-0.5 hover:bg-red-50 font-medium"
                         >Retry</button>
                       </div>
                     )}

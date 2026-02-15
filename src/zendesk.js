@@ -17,41 +17,31 @@ async function callEdgeFunction(body) {
   return res.json();
 }
 
-/**
- * Sucht Zendesk-Kontakt anhand des Aktenzeichens.
- * Gibt Objekt mit status zurück:
- *   { status: "found", name, email, phone, userId }
- *   { status: "phone_only", name, phone, userId }
- *   { status: "not_found" }
- */
-export async function lookupAktenzeichen(aktenzeichen) {
-  if (!aktenzeichen) return { status: "not_found" };
-
-  const data = await callEdgeFunction({ aktenzeichen });
+function parseResult(data) {
   if (!data?.results?.length) return { status: "not_found" };
 
   const user = data.results[0];
-  if (!user.email && user.phone) {
-    return { status: "phone_only", name: user.name, phone: user.phone, userId: user.id };
-  }
-  return { status: "found", name: user.name, email: user.email, phone: user.phone, userId: user.id };
+  const missing = data.missing || [];
+
+  return {
+    status: missing.length > 0 ? "incomplete" : "found",
+    name: user.name,
+    email: user.email,
+    phone: user.phone,
+    userId: user.id,
+    missing,
+    ticket: data.ticket || null,
+  };
 }
 
-/**
- * Sucht User + erstellt Ticket.
- * Gleiche status-Logik wie lookupAktenzeichen, plus ticket-Infos.
- */
+export async function lookupAktenzeichen(aktenzeichen) {
+  if (!aktenzeichen) return { status: "not_found" };
+  const data = await callEdgeFunction({ aktenzeichen });
+  return parseResult(data);
+}
+
 export async function lookupAndCreateTicket(aktenzeichen) {
   if (!aktenzeichen) return { status: "not_found" };
-
   const data = await callEdgeFunction({ aktenzeichen, createTicket: true });
-  if (!data?.results?.length) return { status: "not_found" };
-
-  const user = data.results[0];
-  const ticket = data.ticket || null;
-
-  if (!user.email && user.phone) {
-    return { status: "phone_only", name: user.name, phone: user.phone, userId: user.id, ticket };
-  }
-  return { status: "found", name: user.name, email: user.email, phone: user.phone, userId: user.id, ticket };
+  return parseResult(data);
 }

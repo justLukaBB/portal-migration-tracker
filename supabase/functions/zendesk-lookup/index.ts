@@ -30,6 +30,8 @@ async function searchUser(cfg: ReturnType<typeof getConfig>, aktenzeichen: strin
     phone: u.phone || "",
     id: u.id,
     aktenzeichen: u.user_fields?.[cfg!.fieldKey] || "",
+    adresse: u.user_fields?.adresse || "",
+    geburtstag: u.user_fields?.geburtstag || "",
   }));
 }
 
@@ -93,7 +95,6 @@ Deno.serve(async (req) => {
       );
     }
 
-    // 1. User suchen
     const results = await searchUser(cfg, aktenzeichen);
 
     if (results.length === 0) {
@@ -103,14 +104,20 @@ Deno.serve(async (req) => {
       );
     }
 
-    // 2. Optional: Ticket erstellen + Makro-Aktionen anwenden
+    const user = results[0];
+    const missing: string[] = [];
+    if (!user.email) missing.push("E-Mail");
+    if (!user.adresse) missing.push("Adresse");
+    if (!user.geburtstag) missing.push("Geburtsdatum");
+
+    // Ticket nur erstellen wenn ALLES vollstaendig
     let ticket = null;
-    if (createTicket) {
-      ticket = await createTicketWithMacro(cfg, results[0].id);
+    if (createTicket && missing.length === 0) {
+      ticket = await createTicketWithMacro(cfg, user.id);
     }
 
     return new Response(
-      JSON.stringify({ results, ticket }),
+      JSON.stringify({ results, ticket, missing }),
       { headers: jsonHeaders }
     );
   } catch (err) {
