@@ -6,6 +6,7 @@ import {
   resetAll,
   supabase,
 } from "./supabase";
+import { lookupAktenzeichen } from "./zendesk";
 
 const STORAGE_KEY = "portal-tracker-data";
 
@@ -119,6 +120,7 @@ export default function Tracker() {
   const [colWidths, setColWidths] = useState(() => [...defaultColWidths]);
   const resizeRef = useRef(null);
   const tableRef = useRef(null);
+  const [lookingUp, setLookingUp] = useState({});
 
   // Column resize handlers
   const onResizeStart = useCallback((colIndex, e) => {
@@ -224,6 +226,22 @@ export default function Tracker() {
     n[realIndex] = { ...n[realIndex], [field]: val };
     setRows(n);
     syncToSupabase(n);
+  };
+
+  const handleAzBlur = async (realIndex) => {
+    const az = rows[realIndex].az.trim();
+    if (!az) return;
+    setLookingUp(prev => ({ ...prev, [realIndex]: true }));
+    try {
+      const name = await lookupAktenzeichen(az);
+      if (name) {
+        update(realIndex, "name", name);
+      }
+    } catch (err) {
+      console.error("Zendesk lookup failed:", err);
+    } finally {
+      setLookingUp(prev => ({ ...prev, [realIndex]: false }));
+    }
   };
 
   const handleDeleteRow = (realIndex) => {
@@ -426,8 +444,11 @@ export default function Tracker() {
                     >X</button>
                   </td>
                   <td className="px-3 py-1.5 text-gray-400 font-mono">{displayIdx + 1}</td>
-                  <td className="px-2 py-1.5"><input className={inp} value={r.az} onChange={e => update(realIdx, "az", e.target.value)} /></td>
-                  <td className="px-2 py-1.5"><input className={inp} value={r.name} onChange={e => update(realIdx, "name", e.target.value)} /></td>
+                  <td className="px-2 py-1.5"><input className={inp} value={r.az} onChange={e => update(realIdx, "az", e.target.value)} onBlur={() => handleAzBlur(realIdx)} /></td>
+                  <td className="px-2 py-1.5 relative">
+                    <input className={inp} value={r.name} onChange={e => update(realIdx, "name", e.target.value)} />
+                    {lookingUp[realIdx] && <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-blue-500 animate-pulse">...</span>}
+                  </td>
                   <td className="px-2 py-1.5"><select className={sel} value={r.typ} onChange={e => update(realIdx, "typ", e.target.value)}><option value="">-</option>{typOptions.map(o => <option key={o}>{o}</option>)}</select></td>
                   <td className="px-2 py-1.5"><select className={sel} value={r.batch} onChange={e => update(realIdx, "batch", e.target.value)}><option value="">-</option>{batchOptions.map(o => <option key={o}>{o}</option>)}</select></td>
                   <td className="px-2 py-1.5"><select className={sel} value={r.monat} onChange={e => update(realIdx, "monat", e.target.value)}><option value="">-</option>{monatOptions.map(o => <option key={o}>{o}</option>)}</select></td>
