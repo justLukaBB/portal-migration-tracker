@@ -1,65 +1,121 @@
 import { corsHeaders } from "../_shared/cors.ts";
 
+function getConfig() {
+  const subdomain = Deno.env.get("ZENDESK_SUBDOMAIN");
+  const email = Deno.env.get("ZENDESK_EMAIL");
+  const apiToken = Deno.env.get("ZENDESK_API_TOKEN");
+  const fieldKey = Deno.env.get("ZENDESK_FIELD_KEY") || "aktenzeichen";
+
+  if (!subdomain || !email || !apiToken) return null;
+
+  return {
+    subdomain,
+    fieldKey,
+    baseUrl: `https://${subdomain}.zendesk.com/api/v2`,
+    auth: `Basic ${btoa(`${email}/token:${apiToken}`)}`,
+  };
+}
+
+async function searchUser(cfg: ReturnType<typeof getConfig>, aktenzeichen: string) {
+  const query = `type:user ${cfg!.fieldKey}:${aktenzeichen}`;
+  const res = await fetch(
+    `${cfg!.baseUrl}/search.json?query=${encodeURIComponent(query)}`,
+    { headers: { Authorization: cfg!.auth } }
+  );
+  if (!res.ok) throw new Error(`Zendesk Search fehlgeschlagen: ${res.status}`);
+  const data = await res.json();
+  return (data.results || []).map((u: any) => ({
+    name: u.name || "",
+    email: u.email || "",
+    id: u.id,
+    aktenzeichen: u.user_fields?.[cfg!.fieldKey] || "",
+  }));
+}
+
+async function createTicketWithMacro(cfg: ReturnType<typeof getConfig>, userId: number) {
+  const ticketPayload = {
+    ticket: {
+      requester_id: userId,
+      subject: "Portal Link zusenden",
+      comment: {
+        body: "Portal Link senden",
+        public: false,
+      },
+      tags: ["portal_link", "ticket_type:onboarding"],
+    },
+  };
+
+  const res = await fetch(`${cfg!.baseUrl}/tickets.json`, {
+    method: "POST",
+    headers: {
+      Authorization: cfg!.auth,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(ticketPayload),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Ticket-Erstellung fehlgeschlagen: ${res.status} ${text}`);
+  }
+
+  const data = await res.json();
+  return {
+    ticketId: data.ticket.id,
+    ticketUrl: `https://${cfg!.subdomain}.zendesk.com/agent/tickets/${data.ticket.id}`,
+  };
+}
+
 Deno.serve(async (req) => {
-  // CORS preflight
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
 
+  const jsonHeaders = { ...corsHeaders, "Content-Type": "application/json" };
+
   try {
-    const { aktenzeichen } = await req.json();
+    const body = await req.json();
+    const { aktenzeichen, createTicket } = body;
 
     if (!aktenzeichen || typeof aktenzeichen !== "string") {
       return new Response(
         JSON.stringify({ error: "Aktenzeichen fehlt" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        { status: 400, headers: jsonHeaders }
       );
     }
 
-    const subdomain = Deno.env.get("ZENDESK_SUBDOMAIN");
-    const email = Deno.env.get("ZENDESK_EMAIL");
-    const apiToken = Deno.env.get("ZENDESK_API_TOKEN");
-    const fieldKey = Deno.env.get("ZENDESK_FIELD_KEY") || "aktenzeichen";
-
-    if (!subdomain || !email || !apiToken) {
+    const cfg = getConfig();
+    if (!cfg) {
       return new Response(
         JSON.stringify({ error: "Zendesk-Konfiguration fehlt" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        { status: 500, headers: jsonHeaders }
       );
     }
 
-    const query = `type:user ${fieldKey}:${aktenzeichen}`;
-    const url = `https://${subdomain}.zendesk.com/api/v2/search.json?query=${encodeURIComponent(query)}`;
-    const auth = btoa(`${email}/token:${apiToken}`);
+    // 1. User suchen
+    const results = await searchUser(cfg, aktenzeichen);
 
-    const zdRes = await fetch(url, {
-      headers: { Authorization: `Basic ${auth}` },
-    });
-
-    if (!zdRes.ok) {
-      const text = await zdRes.text();
+    if (results.length === 0) {
       return new Response(
-        JSON.stringify({ error: `Zendesk API Fehler: ${zdRes.status}`, detail: text }),
-        { status: zdRes.status, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({ results: [], ticket: null }),
+        { headers: jsonHeaders }
       );
     }
 
-    const data = await zdRes.json();
-    const results = (data.results || []).map((u: any) => ({
-      name: u.name || "",
-      email: u.email || "",
-      id: u.id,
-      aktenzeichen: u.user_fields?.[fieldKey] || "",
-    }));
+    // 2. Optional: Ticket erstellen + Makro-Aktionen anwenden
+    let ticket = null;
+    if (createTicket) {
+      ticket = await createTicketWithMacro(cfg, results[0].id);
+    }
 
     return new Response(
-      JSON.stringify({ results }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      JSON.stringify({ results, ticket }),
+      { headers: jsonHeaders }
     );
   } catch (err) {
     return new Response(
       JSON.stringify({ error: err.message }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      { status: 500, headers: jsonHeaders }
     );
   }
 });

@@ -6,7 +6,7 @@ import {
   resetAll,
   supabase,
 } from "./supabase";
-import { lookupAktenzeichen } from "./zendesk";
+import { lookupAndCreateTicket } from "./zendesk";
 
 const STORAGE_KEY = "portal-tracker-data";
 
@@ -233,12 +233,18 @@ export default function Tracker() {
     if (!az) return;
     setLookingUp(prev => ({ ...prev, [realIndex]: true }));
     try {
-      const name = await lookupAktenzeichen(az);
-      if (name) {
-        update(realIndex, "name", name);
+      const result = await lookupAndCreateTicket(az);
+      if (result) {
+        const n = [...rows];
+        n[realIndex] = { ...n[realIndex], name: result.name };
+        setRows(n);
+        syncToSupabase(n);
+        if (result.ticketUrl) {
+          console.log(`Ticket erstellt: ${result.ticketUrl}`);
+        }
       }
     } catch (err) {
-      console.error("Zendesk lookup failed:", err);
+      console.error("Zendesk lookup/ticket failed:", err);
     } finally {
       setLookingUp(prev => ({ ...prev, [realIndex]: false }));
     }
