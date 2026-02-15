@@ -18,34 +18,40 @@ async function callEdgeFunction(body) {
 }
 
 /**
- * Sucht den Namen eines Zendesk-Kontakts anhand des Aktenzeichens.
- * Gibt { name, userId } zurück oder null.
+ * Sucht Zendesk-Kontakt anhand des Aktenzeichens.
+ * Gibt Objekt mit status zurück:
+ *   { status: "found", name, email, phone, userId }
+ *   { status: "phone_only", name, phone, userId }
+ *   { status: "not_found" }
  */
 export async function lookupAktenzeichen(aktenzeichen) {
-  if (!aktenzeichen) return null;
+  if (!aktenzeichen) return { status: "not_found" };
 
   const data = await callEdgeFunction({ aktenzeichen });
-  if (data?.results?.length > 0) {
-    return { name: data.results[0].name, userId: data.results[0].id };
+  if (!data?.results?.length) return { status: "not_found" };
+
+  const user = data.results[0];
+  if (!user.email && user.phone) {
+    return { status: "phone_only", name: user.name, phone: user.phone, userId: user.id };
   }
-  return null;
+  return { status: "found", name: user.name, email: user.email, phone: user.phone, userId: user.id };
 }
 
 /**
- * Sucht User + erstellt Ticket mit Makro "Portal Link senden".
- * Gibt { name, userId, ticketId, ticketUrl } zurück oder null.
+ * Sucht User + erstellt Ticket.
+ * Gleiche status-Logik wie lookupAktenzeichen, plus ticket-Infos.
  */
 export async function lookupAndCreateTicket(aktenzeichen) {
-  if (!aktenzeichen) return null;
+  if (!aktenzeichen) return { status: "not_found" };
 
   const data = await callEdgeFunction({ aktenzeichen, createTicket: true });
-  if (data?.results?.length > 0) {
-    return {
-      name: data.results[0].name,
-      userId: data.results[0].id,
-      ticketId: data.ticket?.ticketId || null,
-      ticketUrl: data.ticket?.ticketUrl || null,
-    };
+  if (!data?.results?.length) return { status: "not_found" };
+
+  const user = data.results[0];
+  const ticket = data.ticket || null;
+
+  if (!user.email && user.phone) {
+    return { status: "phone_only", name: user.name, phone: user.phone, userId: user.id, ticket };
   }
-  return null;
+  return { status: "found", name: user.name, email: user.email, phone: user.phone, userId: user.id, ticket };
 }

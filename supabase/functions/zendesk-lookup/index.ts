@@ -27,6 +27,7 @@ async function searchUser(cfg: ReturnType<typeof getConfig>, aktenzeichen: strin
   return (data.results || []).map((u: any) => ({
     name: u.name || "",
     email: u.email || "",
+    phone: u.phone || "",
     id: u.id,
     aktenzeichen: u.user_fields?.[cfg!.fieldKey] || "",
   }));
