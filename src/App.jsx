@@ -6,7 +6,7 @@ import {
   resetAll,
   supabase,
 } from "./supabase";
-import { lookupAndCreateTicket } from "./zendesk";
+import { lookupAktenzeichen, lookupAndCreateTicket } from "./zendesk";
 
 const STORAGE_KEY = "portal-tracker-data";
 
@@ -121,6 +121,7 @@ export default function Tracker() {
   const resizeRef = useRef(null);
   const tableRef = useRef(null);
   const [lookingUp, setLookingUp] = useState({});
+  const [autoTicket, setAutoTicket] = useState(false);
 
   // Column resize handlers
   const onResizeStart = useCallback((colIndex, e) => {
@@ -233,18 +234,22 @@ export default function Tracker() {
     if (!az) return;
     setLookingUp(prev => ({ ...prev, [realIndex]: true }));
     try {
-      const result = await lookupAndCreateTicket(az);
-      if (result) {
-        const n = [...rows];
-        n[realIndex] = { ...n[realIndex], name: result.name };
-        setRows(n);
-        syncToSupabase(n);
-        if (result.ticketUrl) {
-          console.log(`Ticket erstellt: ${result.ticketUrl}`);
+      if (autoTicket) {
+        const result = await lookupAndCreateTicket(az);
+        if (result) {
+          const n = [...rows];
+          n[realIndex] = { ...n[realIndex], name: result.name };
+          setRows(n);
+          syncToSupabase(n);
+        }
+      } else {
+        const result = await lookupAktenzeichen(az);
+        if (result) {
+          update(realIndex, "name", result.name);
         }
       }
     } catch (err) {
-      console.error("Zendesk lookup/ticket failed:", err);
+      console.error("Zendesk lookup failed:", err);
     } finally {
       setLookingUp(prev => ({ ...prev, [realIndex]: false }));
     }
@@ -359,7 +364,13 @@ export default function Tracker() {
           <h1 className="text-xl font-bold text-gray-800">Portal-Migration Tracking</h1>
           <SyncIndicator status={syncStatus} />
         </div>
-        <div className="flex gap-2 flex-wrap">
+        <div className="flex gap-2 flex-wrap items-center">
+          <button
+            onClick={() => setAutoTicket(prev => !prev)}
+            className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${autoTicket ? "bg-green-600 text-white hover:bg-green-700" : "bg-gray-200 text-gray-600 hover:bg-gray-300"}`}
+          >
+            Ticket-Erstellung: {autoTicket ? "AN" : "AUS"}
+          </button>
           <button onClick={addRows} className="bg-gray-600 text-white px-3 py-1.5 rounded text-sm hover:bg-gray-700 transition-colors">+ 10 Zeilen</button>
           <button onClick={exportCSV} className="bg-blue-600 text-white px-3 py-1.5 rounded text-sm hover:bg-blue-700 transition-colors">CSV Export</button>
           <button onClick={resetData} className="bg-red-600 text-white px-3 py-1.5 rounded text-sm hover:bg-red-700 transition-colors">Daten zurücksetzen</button>
