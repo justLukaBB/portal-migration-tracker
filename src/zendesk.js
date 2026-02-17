@@ -29,6 +29,7 @@ function parseResult(data) {
     email: user.email,
     phone: user.phone,
     userId: user.id,
+    userUrl: user.userUrl || "",
     missing,
     ticket: data.ticket || null,
   };

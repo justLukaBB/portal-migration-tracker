@@ -29,6 +29,7 @@ async function searchUser(cfg: ReturnType<typeof getConfig>, aktenzeichen: strin
     email: u.email || "",
     phone: u.phone || "",
     id: u.id,
+    userUrl: `https://${cfg!.subdomain}.zendesk.com/agent/users/${u.id}`,
     aktenzeichen: u.user_fields?.[cfg!.fieldKey] || "",
     adresse: u.user_fields?.adresse || "",
     geburtstag: u.user_fields?.geburtstag || "",

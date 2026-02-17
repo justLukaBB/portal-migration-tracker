@@ -11,7 +11,7 @@ import { lookupAktenzeichen, lookupAndCreateTicket } from "./zendesk";
 const STORAGE_KEY = "portal-tracker-data";
 
 const headers = [
-  "", "Nr.", "Aktenzeichen", "Name Mandant", "Online / Lokal", "Batch",
+  "", "Nr.", "Zendesk", "Aktenzeichen", "Name Mandant", "Online / Lokal", "Batch",
   "Monat", "1. Rate bezahlt", "Portal angelegt", "Datum Portal",
   "E-Mail versendet", "Datum E-Mail", "Dokumente hochgeladen",
   "Reminder versendet", "Datum Reminder", "Tel. Nachfass", "Status", "Bemerkung"
@@ -24,7 +24,7 @@ const jaOptions = ["Ja", "Nein"];
 const typOptions = ["Online", "Lokal"];
 
 const defaultColWidths = [
-  36, 50, 120, 150, 100, 120, 90, 100, 110, 120, 110, 120, 140, 120, 120, 100, 130, 150
+  36, 50, 70, 120, 150, 100, 120, 90, 100, 110, 120, 110, 120, 140, 120, 120, 100, 130, 150
 ];
 
 const statusColors = {
@@ -41,7 +41,7 @@ const statusColors = {
 function makeEmptyRow() {
   return {
     id: crypto.randomUUID(),
-    az: "", name: "", typ: "", batch: "", monat: "",
+    az: "", zendeskUrl: "", name: "", typ: "", batch: "", monat: "",
     rate: "", portal: "", datumPortal: "", email: "", datumEmail: "",
     docs: "", reminder: "", datumReminder: "", tel: "", status: "Offen", bemerkung: ""
   };
@@ -246,14 +246,20 @@ export default function Tracker() {
           [realIndex]: { msg: `Kein Kontakt fuer "${az}" in Zendesk gefunden.` },
         }));
       } else if (result.status === "incomplete") {
-        update(realIndex, "name", result.name);
+        const n = [...rows];
+        n[realIndex] = { ...n[realIndex], name: result.name, zendeskUrl: result.userUrl };
+        setRows(n);
+        syncToSupabase(n);
         const felder = result.missing.join(", ");
         setRowWarnings(prev => ({
           ...prev,
           [realIndex]: { msg: `Unvollstaendig – es fehlt: ${felder}. Kein Ticket erstellt.` },
         }));
       } else {
-        update(realIndex, "name", result.name);
+        const n = [...rows];
+        n[realIndex] = { ...n[realIndex], name: result.name, zendeskUrl: result.userUrl };
+        setRows(n);
+        syncToSupabase(n);
         setRowWarnings(prev => ({ ...prev, [realIndex]: null }));
       }
     } catch (err) {
@@ -316,12 +322,12 @@ export default function Tracker() {
   };
 
   const exportCSV = () => {
-    const csvHeaders = ["Nr.", "Aktenzeichen", "Name Mandant", "Online / Lokal", "Batch",
+    const csvHeaders = ["Nr.", "Zendesk", "Aktenzeichen", "Name Mandant", "Online / Lokal", "Batch",
       "Monat", "1. Rate bezahlt", "Portal angelegt", "Datum Portal",
       "E-Mail versendet", "Datum E-Mail", "Dokumente hochgeladen",
       "Reminder versendet", "Datum Reminder", "Tel. Nachfass", "Status", "Bemerkung"].join(";");
     const csvRows = rows.map((r, i) =>
-      [i + 1, r.az, r.name, r.typ, r.batch, r.monat, r.rate, r.portal, r.datumPortal, r.email, r.datumEmail, r.docs, r.reminder, r.datumReminder, r.tel, r.status, r.bemerkung].join(";")
+      [i + 1, r.zendeskUrl, r.az, r.name, r.typ, r.batch, r.monat, r.rate, r.portal, r.datumPortal, r.email, r.datumEmail, r.docs, r.reminder, r.datumReminder, r.tel, r.status, r.bemerkung].join(";")
     );
     const csv = [csvHeaders, ...csvRows].join("\n");
     const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
@@ -474,6 +480,19 @@ export default function Tracker() {
                     >X</button>
                   </td>
                   <td className="px-3 py-1.5 text-gray-400 font-mono">{displayIdx + 1}</td>
+                  <td className="px-2 py-1.5 text-center">
+                    {r.zendeskUrl ? (
+                      <a
+                        href={r.zendeskUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:text-blue-800 underline text-xs font-medium"
+                        title={r.zendeskUrl}
+                      >Link</a>
+                    ) : (
+                      <span className="text-gray-300 text-xs">–</span>
+                    )}
+                  </td>
                   <td className="px-2 py-1.5">
                     <input className={`${inp} ${warning ? "border-red-400" : ""}`} value={r.az} onChange={e => update(realIdx, "az", e.target.value)} onBlur={() => handleAzBlur(realIdx)} />
                     {warning && (
