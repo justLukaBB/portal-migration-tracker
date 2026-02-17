@@ -13,6 +13,7 @@ function toDbRow(row, index) {
     id: row.id,
     position: index,
     az: row.az,
+    zendesk_url: row.zendeskUrl,
     name: row.name,
     typ: row.typ,
     batch: row.batch,
@@ -35,6 +36,7 @@ function fromDbRow(dbRow) {
   return {
     id: dbRow.id,
     az: dbRow.az || "",
+    zendeskUrl: dbRow.zendesk_url || "",
     name: dbRow.name || "",
     typ: dbRow.typ || "",
     batch: dbRow.batch || "",
