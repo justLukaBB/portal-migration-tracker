@@ -125,6 +125,8 @@ export default function Tracker() {
   const [autoTicket, setAutoTicket] = useState(false);
   const [rowWarnings, setRowWarnings] = useState({});
   const [selected, setSelected] = useState(new Set());
+  const fileInputRef = useRef(null);
+  const [batchProgress, setBatchProgress] = useState(null); // { current, total, phase }
 
   // Column resize handlers
   const onResizeStart = useCallback((colIndex, e) => {
@@ -311,6 +313,117 @@ export default function Tracker() {
     }
   };
 
+  // Phase 1: CSV Import
+  const handleCSVImport = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const text = e.target.result;
+      const lines = text.split(/\r?\n/).filter(l => l.trim());
+      // Skip header line
+      const dataLines = lines.slice(1);
+      const newRows = [];
+      for (const line of dataLines) {
+        const match = line.match(/^([^,]+),\s*"(.+)"$/);
+        if (match) {
+          newRows.push({
+            ...makeEmptyRow(),
+            az: match[1].trim(),
+            name: match[2].trim(),
+          });
+        }
+      }
+      if (newRows.length === 0) return;
+      const updatedRows = [...rows, ...newRows];
+      setRows(updatedRows);
+      syncToSupabase(updatedRows);
+    };
+    reader.readAsText(file, "utf-8");
+    // Reset file input so re-selecting the same file triggers onChange
+    event.target.value = "";
+  };
+
+  // Phase 2: Batch Zendesk Lookup (NO ticket creation)
+  const runBatchLookup = async () => {
+    const pending = rows
+      .map((r, i) => ({ row: r, index: i }))
+      .filter(({ row }) => row.az.trim() && !row.zendeskUrl);
+    if (pending.length === 0) return;
+
+    setBatchProgress({ current: 0, total: pending.length, phase: "Zendesk Lookup" });
+    let currentRows = [...rows];
+
+    for (let i = 0; i < pending.length; i++) {
+      const { row, index } = pending[i];
+      setBatchProgress({ current: i + 1, total: pending.length, phase: "Zendesk Lookup" });
+      try {
+        const result = await lookupAktenzeichen(row.az.trim());
+        if (result.status !== "not_found") {
+          currentRows = [...currentRows];
+          currentRows[index] = {
+            ...currentRows[index],
+            name: result.name || currentRows[index].name,
+            zendeskUrl: result.userUrl || currentRows[index].zendeskUrl,
+          };
+          setRows(currentRows);
+        }
+      } catch (err) {
+        console.error(`Lookup failed for ${row.az}:`, err);
+      }
+      // Rate limiting: 300ms pause between requests
+      if (i < pending.length - 1) {
+        await new Promise(r => setTimeout(r, 300));
+      }
+    }
+
+    syncToSupabase(currentRows);
+    setBatchProgress(null);
+  };
+
+  // Phase 3: Batch Ticket Creation (only selected rows)
+  const runBatchTickets = async () => {
+    const selectedWithZendesk = [...selected]
+      .filter(idx => rows[idx]?.az.trim() && rows[idx]?.zendeskUrl)
+      .sort((a, b) => a - b);
+
+    if (selectedWithZendesk.length === 0) return;
+    if (!window.confirm(`Tickets für ${selectedWithZendesk.length} Mandant(en) erstellen?`)) return;
+
+    setBatchProgress({ current: 0, total: selectedWithZendesk.length, phase: "Tickets erstellen" });
+    let currentRows = [...rows];
+
+    for (let i = 0; i < selectedWithZendesk.length; i++) {
+      const idx = selectedWithZendesk[i];
+      const row = currentRows[idx];
+      setBatchProgress({ current: i + 1, total: selectedWithZendesk.length, phase: "Tickets erstellen" });
+      try {
+        const result = await lookupAndCreateTicket(row.az.trim());
+        if (result.status !== "not_found") {
+          currentRows = [...currentRows];
+          currentRows[idx] = {
+            ...currentRows[idx],
+            name: result.name || currentRows[idx].name,
+            zendeskUrl: result.userUrl || currentRows[idx].zendeskUrl,
+          };
+          setRows(currentRows);
+        }
+      } catch (err) {
+        console.error(`Ticket creation failed for ${row.az}:`, err);
+      }
+      // Rate limiting: 500ms pause between requests
+      if (i < selectedWithZendesk.length - 1) {
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }
+
+    syncToSupabase(currentRows);
+    setBatchProgress(null);
+  };
+
+  const pendingLookupCount = rows.filter(r => r.az.trim() && !r.zendeskUrl).length;
+  const selectedWithZendeskCount = [...selected].filter(idx => rows[idx]?.az.trim() && rows[idx]?.zendeskUrl).length;
+
   const toggleSelect = (realIdx) => {
     setSelected(prev => {
       const next = new Set(prev);
@@ -422,20 +535,44 @@ export default function Tracker() {
           <SyncIndicator status={syncStatus} />
         </div>
         <div className="flex gap-2 flex-wrap items-center">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv"
+            className="hidden"
+            onChange={handleCSVImport}
+          />
           <button
-            onClick={() => setAutoTicket(prev => !prev)}
-            className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${autoTicket ? "bg-green-600 text-white hover:bg-green-700" : "bg-gray-200 text-gray-600 hover:bg-gray-300"}`}
+            onClick={() => fileInputRef.current?.click()}
+            disabled={!!batchProgress}
+            className="bg-indigo-600 text-white px-3 py-1.5 rounded text-sm hover:bg-indigo-700 transition-colors disabled:opacity-50"
           >
-            Ticket-Erstellung: {autoTicket ? "AN" : "AUS"}
+            CSV Import
           </button>
+          <button
+            onClick={runBatchLookup}
+            disabled={!!batchProgress || pendingLookupCount === 0}
+            className="bg-amber-600 text-white px-3 py-1.5 rounded text-sm hover:bg-amber-700 transition-colors disabled:opacity-50"
+          >
+            Zendesk Lookup ({pendingLookupCount})
+          </button>
+          {selectedWithZendeskCount > 0 && (
+            <button
+              onClick={runBatchTickets}
+              disabled={!!batchProgress}
+              className="bg-green-600 text-white px-3 py-1.5 rounded text-sm hover:bg-green-700 transition-colors disabled:opacity-50"
+            >
+              Tickets erstellen ({selectedWithZendeskCount})
+            </button>
+          )}
           {selected.size > 0 && (
-            <button onClick={handleDeleteSelected} className="bg-red-500 text-white px-3 py-1.5 rounded text-sm hover:bg-red-600 transition-colors">
+            <button onClick={handleDeleteSelected} disabled={!!batchProgress} className="bg-red-500 text-white px-3 py-1.5 rounded text-sm hover:bg-red-600 transition-colors disabled:opacity-50">
               {selected.size} Zeile(n) löschen
             </button>
           )}
-          <button onClick={addRows} className="bg-gray-600 text-white px-3 py-1.5 rounded text-sm hover:bg-gray-700 transition-colors">+ 10 Zeilen</button>
+          <button onClick={addRows} disabled={!!batchProgress} className="bg-gray-600 text-white px-3 py-1.5 rounded text-sm hover:bg-gray-700 transition-colors disabled:opacity-50">+ 10 Zeilen</button>
           <button onClick={exportCSV} className="bg-blue-600 text-white px-3 py-1.5 rounded text-sm hover:bg-blue-700 transition-colors">CSV Export</button>
-          <button onClick={resetData} className="bg-red-600 text-white px-3 py-1.5 rounded text-sm hover:bg-red-700 transition-colors">Daten zurücksetzen</button>
+          <button onClick={resetData} disabled={!!batchProgress} className="bg-red-600 text-white px-3 py-1.5 rounded text-sm hover:bg-red-700 transition-colors disabled:opacity-50">Daten zurücksetzen</button>
         </div>
       </div>
 
@@ -487,6 +624,26 @@ export default function Tracker() {
           </div>
         )}
       </div>
+
+      {/* Batch Progress Bar */}
+      {batchProgress && (
+        <div className="mb-4 bg-white rounded-lg shadow-sm p-4">
+          <div className="flex justify-between items-center mb-2">
+            <span className="text-sm font-medium text-gray-700">
+              {batchProgress.current} / {batchProgress.total} – {batchProgress.phase}...
+            </span>
+            <span className="text-xs text-gray-500">
+              {Math.round((batchProgress.current / batchProgress.total) * 100)}%
+            </span>
+          </div>
+          <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-blue-500 rounded-full transition-all duration-300"
+              style={{ width: `${(batchProgress.current / batchProgress.total) * 100}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Table */}
       <div className="overflow-x-auto bg-white rounded shadow relative" style={{ maxHeight: "70vh" }}>
