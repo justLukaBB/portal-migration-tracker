@@ -127,6 +127,7 @@ export default function Tracker() {
   const [selected, setSelected] = useState(new Set());
   const fileInputRef = useRef(null);
   const [batchProgress, setBatchProgress] = useState(null); // { current, total, phase }
+  const [newlyImportedIds, setNewlyImportedIds] = useState(new Set());
 
   // Column resize handlers
   const onResizeStart = useCallback((colIndex, e) => {
@@ -335,6 +336,7 @@ export default function Tracker() {
         }
       }
       if (newRows.length === 0) return;
+      setNewlyImportedIds(new Set(newRows.map(r => r.id)));
       const updatedRows = [...rows, ...newRows];
       setRows(updatedRows);
       syncToSupabase(updatedRows);
@@ -381,6 +383,51 @@ export default function Tracker() {
     setBatchProgress(null);
   };
 
+  // Phase 2b: Lookup only for newly imported rows
+  const runLookupForNewImports = async () => {
+    const pending = rows
+      .map((r, i) => ({ row: r, index: i }))
+      .filter(({ row }) => newlyImportedIds.has(row.id) && row.az.trim() && !row.zendeskUrl);
+    if (pending.length === 0) return;
+
+    const withTickets = autoTicket;
+    const phase = withTickets ? "Lookup + Tickets (neue Importe)" : "Lookup (neue Importe)";
+    if (withTickets && !window.confirm(`Lookup + Ticket-Erstellung für ${pending.length} neue Importe starten?`)) return;
+
+    setBatchProgress({ current: 0, total: pending.length, phase });
+    let currentRows = [...rows];
+    const remainingIds = new Set(newlyImportedIds);
+
+    for (let i = 0; i < pending.length; i++) {
+      const { row, index } = pending[i];
+      setBatchProgress({ current: i + 1, total: pending.length, phase });
+      try {
+        const result = withTickets
+          ? await lookupAndCreateTicket(row.az.trim())
+          : await lookupAktenzeichen(row.az.trim());
+        if (result.status !== "not_found") {
+          currentRows = [...currentRows];
+          currentRows[index] = {
+            ...currentRows[index],
+            name: result.name || currentRows[index].name,
+            zendeskUrl: result.userUrl || currentRows[index].zendeskUrl,
+          };
+          setRows(currentRows);
+          remainingIds.delete(row.id);
+        }
+      } catch (err) {
+        console.error(`Lookup failed for ${row.az}:`, err);
+      }
+      if (i < pending.length - 1) {
+        await new Promise(r => setTimeout(r, withTickets ? 500 : 300));
+      }
+    }
+
+    setNewlyImportedIds(remainingIds);
+    syncToSupabase(currentRows);
+    setBatchProgress(null);
+  };
+
   // Phase 3: Batch Ticket Creation (only selected rows)
   const runBatchTickets = async () => {
     const selectedWithZendesk = [...selected]
@@ -422,6 +469,7 @@ export default function Tracker() {
   };
 
   const pendingLookupCount = rows.filter(r => r.az.trim() && !r.zendeskUrl).length;
+  const newImportPendingCount = rows.filter(r => newlyImportedIds.has(r.id) && r.az.trim() && !r.zendeskUrl).length;
   const selectedWithZendeskCount = [...selected].filter(idx => rows[idx]?.az.trim() && rows[idx]?.zendeskUrl).length;
 
   const toggleSelect = (realIdx) => {
@@ -556,6 +604,24 @@ export default function Tracker() {
           >
             Zendesk Lookup ({pendingLookupCount})
           </button>
+          {newImportPendingCount > 0 && (
+            <>
+              <button
+                onClick={runLookupForNewImports}
+                disabled={!!batchProgress}
+                className="bg-amber-500 text-white px-3 py-1.5 rounded text-sm hover:bg-amber-600 transition-colors disabled:opacity-50"
+              >
+                Nur neue Importe ({newImportPendingCount})
+              </button>
+              <button
+                onClick={() => setAutoTicket(prev => !prev)}
+                disabled={!!batchProgress}
+                className={`px-3 py-1.5 rounded text-sm font-medium transition-colors disabled:opacity-50 ${autoTicket ? "bg-green-600 text-white hover:bg-green-700" : "bg-gray-200 text-gray-600 hover:bg-gray-300"}`}
+              >
+                Tickets: {autoTicket ? "AN" : "AUS"}
+              </button>
+            </>
+          )}
           {selectedWithZendeskCount > 0 && (
             <button
               onClick={runBatchTickets}
