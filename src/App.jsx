@@ -3,6 +3,7 @@ import {
   fetchRows,
   upsertRows,
   deleteRow as supaDeleteRow,
+  deleteRowsByIds,
   resetAll,
   supabase,
 } from "./supabase";
@@ -123,6 +124,7 @@ export default function Tracker() {
   const [lookingUp, setLookingUp] = useState({});
   const [autoTicket, setAutoTicket] = useState(false);
   const [rowWarnings, setRowWarnings] = useState({});
+  const [selected, setSelected] = useState(new Set());
   const fileInputRef = useRef(null);
   const [batchProgress, setBatchProgress] = useState(null); // { current, total, phase }
   const [newlyImportedIds, setNewlyImportedIds] = useState(new Set());
@@ -292,6 +294,26 @@ export default function Tracker() {
     }
   };
 
+  const handleDeleteSelected = async () => {
+    if (selected.size === 0) return;
+    if (!window.confirm(`${selected.size} Zeile(n) wirklich löschen?`)) return;
+    const idsToDelete = [...selected].map(idx => rows[idx]?.id).filter(Boolean);
+    const newRows = rows.filter((_, i) => !selected.has(i));
+    setRows(newRows);
+    setSelected(new Set());
+    if (supabase && idsToDelete.length > 0) {
+      setSyncStatus("saving");
+      try {
+        await deleteRowsByIds(idsToDelete);
+        await upsertRows(newRows);
+        setSyncStatus("saved");
+      } catch (err) {
+        console.error("Supabase bulk delete failed:", err);
+        setSyncStatus("error");
+      }
+    }
+  };
+
   // Phase 1: CSV Import
   const handleCSVImport = (event) => {
     const file = event.target.files?.[0];
@@ -406,8 +428,66 @@ export default function Tracker() {
     setBatchProgress(null);
   };
 
+  // Phase 3: Batch Ticket Creation (only selected rows)
+  const runBatchTickets = async () => {
+    const selectedWithZendesk = [...selected]
+      .filter(idx => rows[idx]?.az.trim() && rows[idx]?.zendeskUrl)
+      .sort((a, b) => a - b);
+
+    if (selectedWithZendesk.length === 0) return;
+    if (!window.confirm(`Tickets für ${selectedWithZendesk.length} Mandant(en) erstellen?`)) return;
+
+    setBatchProgress({ current: 0, total: selectedWithZendesk.length, phase: "Tickets erstellen" });
+    let currentRows = [...rows];
+
+    for (let i = 0; i < selectedWithZendesk.length; i++) {
+      const idx = selectedWithZendesk[i];
+      const row = currentRows[idx];
+      setBatchProgress({ current: i + 1, total: selectedWithZendesk.length, phase: "Tickets erstellen" });
+      try {
+        const result = await lookupAndCreateTicket(row.az.trim());
+        if (result.status !== "not_found") {
+          currentRows = [...currentRows];
+          currentRows[idx] = {
+            ...currentRows[idx],
+            name: result.name || currentRows[idx].name,
+            zendeskUrl: result.userUrl || currentRows[idx].zendeskUrl,
+          };
+          setRows(currentRows);
+        }
+      } catch (err) {
+        console.error(`Ticket creation failed for ${row.az}:`, err);
+      }
+      // Rate limiting: 500ms pause between requests
+      if (i < selectedWithZendesk.length - 1) {
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }
+
+    syncToSupabase(currentRows);
+    setBatchProgress(null);
+  };
+
   const pendingLookupCount = rows.filter(r => r.az.trim() && !r.zendeskUrl).length;
   const newImportPendingCount = rows.filter(r => newlyImportedIds.has(r.id) && r.az.trim() && !r.zendeskUrl).length;
+  const selectedWithZendeskCount = [...selected].filter(idx => rows[idx]?.az.trim() && rows[idx]?.zendeskUrl).length;
+
+  const toggleSelect = (realIdx) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(realIdx)) next.delete(realIdx);
+      else next.add(realIdx);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selected.size === filteredIndices.length) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(filteredIndices));
+    }
+  };
 
   const addRows = () => {
     const newRows = [...rows, ...makeEmptyRows(10)];
@@ -542,6 +622,20 @@ export default function Tracker() {
               </button>
             </>
           )}
+          {selectedWithZendeskCount > 0 && (
+            <button
+              onClick={runBatchTickets}
+              disabled={!!batchProgress}
+              className="bg-green-600 text-white px-3 py-1.5 rounded text-sm hover:bg-green-700 transition-colors disabled:opacity-50"
+            >
+              Tickets erstellen ({selectedWithZendeskCount})
+            </button>
+          )}
+          {selected.size > 0 && (
+            <button onClick={handleDeleteSelected} disabled={!!batchProgress} className="bg-red-500 text-white px-3 py-1.5 rounded text-sm hover:bg-red-600 transition-colors disabled:opacity-50">
+              {selected.size} Zeile(n) löschen
+            </button>
+          )}
           <button onClick={addRows} disabled={!!batchProgress} className="bg-gray-600 text-white px-3 py-1.5 rounded text-sm hover:bg-gray-700 transition-colors disabled:opacity-50">+ 10 Zeilen</button>
           <button onClick={exportCSV} className="bg-blue-600 text-white px-3 py-1.5 rounded text-sm hover:bg-blue-700 transition-colors">CSV Export</button>
           <button onClick={resetData} disabled={!!batchProgress} className="bg-red-600 text-white px-3 py-1.5 rounded text-sm hover:bg-red-700 transition-colors disabled:opacity-50">Daten zurücksetzen</button>
@@ -629,7 +723,14 @@ export default function Tracker() {
             <tr className="bg-gray-800 text-white">
               {headers.map((h, i) => (
                 <th key={i} className="px-3 py-2.5 text-left font-medium whitespace-nowrap relative overflow-hidden" style={{ width: colWidths[i] }}>
-                  {h}
+                  {i === 0 ? (
+                    <input
+                      type="checkbox"
+                      checked={filteredIndices.length > 0 && selected.size === filteredIndices.length}
+                      onChange={toggleSelectAll}
+                      className="accent-blue-500 cursor-pointer"
+                    />
+                  ) : h}
                   <div
                     onMouseDown={(e) => onResizeStart(i, e)}
                     className="absolute top-0 right-0 w-1.5 h-full cursor-col-resize hover:bg-blue-400/50 active:bg-blue-400/70"
@@ -646,11 +747,12 @@ export default function Tracker() {
               return (
                 <tr key={r.id || realIdx} className={`border-b ${rowColor} hover:brightness-95 transition-all`}>
                   <td className="px-2 py-1.5 text-center">
-                    <button
-                      onClick={() => handleDeleteRow(realIdx)}
-                      className="text-red-400 hover:text-red-600 font-bold text-xs leading-none transition-colors"
-                      title="Zeile löschen"
-                    >X</button>
+                    <input
+                      type="checkbox"
+                      checked={selected.has(realIdx)}
+                      onChange={() => toggleSelect(realIdx)}
+                      className="accent-blue-500 cursor-pointer"
+                    />
                   </td>
                   <td className="px-3 py-1.5 text-gray-400 font-mono">{displayIdx + 1}</td>
                   <td className="px-2 py-1.5 text-center">
