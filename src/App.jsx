@@ -604,23 +604,21 @@ export default function Tracker() {
           >
             Zendesk Lookup ({pendingLookupCount})
           </button>
+          <button
+            onClick={() => setAutoTicket(prev => !prev)}
+            disabled={!!batchProgress}
+            className={`px-3 py-1.5 rounded text-sm font-medium transition-colors disabled:opacity-50 ${autoTicket ? "bg-green-600 text-white hover:bg-green-700" : "bg-gray-200 text-gray-600 hover:bg-gray-300"}`}
+          >
+            Ticket-Erstellung: {autoTicket ? "AN" : "AUS"}
+          </button>
           {newImportPendingCount > 0 && (
-            <>
-              <button
-                onClick={runLookupForNewImports}
-                disabled={!!batchProgress}
-                className="bg-amber-500 text-white px-3 py-1.5 rounded text-sm hover:bg-amber-600 transition-colors disabled:opacity-50"
-              >
-                Nur neue Importe ({newImportPendingCount})
-              </button>
-              <button
-                onClick={() => setAutoTicket(prev => !prev)}
-                disabled={!!batchProgress}
-                className={`px-3 py-1.5 rounded text-sm font-medium transition-colors disabled:opacity-50 ${autoTicket ? "bg-green-600 text-white hover:bg-green-700" : "bg-gray-200 text-gray-600 hover:bg-gray-300"}`}
-              >
-                Tickets: {autoTicket ? "AN" : "AUS"}
-              </button>
-            </>
+            <button
+              onClick={runLookupForNewImports}
+              disabled={!!batchProgress}
+              className="bg-amber-500 text-white px-3 py-1.5 rounded text-sm hover:bg-amber-600 transition-colors disabled:opacity-50"
+            >
+              Nur neue Importe ({newImportPendingCount})
+            </button>
           )}
           {selectedWithZendeskCount > 0 && (
             <button
